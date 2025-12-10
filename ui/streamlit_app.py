@@ -10,28 +10,12 @@ st.set_page_config(
     page_icon="💬",
 )
 
-# ---------- CUSTOM CSS TO LOOK CHAT-LIKE ----------
-CHAT_CSS = """
+# ---------- GLOBAL CSS ----------
+BASE_CSS = """
 <style>
 /* Hide Streamlit default menu & footer */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-
-/* Top brand bar */
-.brand-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0;
-}
-.brand-title {
-    font-weight: 700;
-    font-size: 1.1rem;
-}
-.brand-subtitle {
-    font-size: 0.8rem;
-    color: #666;
-}
 
 /* Make chat wider & cleaner */
 .block-container {
@@ -43,9 +27,47 @@ footer {visibility: hidden;}
 [data-testid="stChatMessage"] {
     max-width: 900px;
 }
+
+/* Header styles */
+.header-container {
+    display: flex;
+    align-items: flex-start;
+    border-bottom: 2px solid #B40001;  /* Union Bank red */
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.8rem;
+}
+
+.header-title {
+    font-size: 1.6rem;
+    font-weight: 900;
+    color: #B40001;
+    letter-spacing: 0.6px;
+}
+
+.header-subtitle {
+    font-size: 0.9rem;
+    margin-top: 0.1rem;
+    color: #444444;
+}
 </style>
 """
-st.markdown(CHAT_CSS, unsafe_allow_html=True)
+st.markdown(BASE_CSS, unsafe_allow_html=True)
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+LOGO_PATH = os.path.join(PROJECT_ROOT, "ui", "union_bank_logo.png")
+
+# ---------- MAIN PAGE HEADER (NO LOGO, ONLY TITLE) ----------
+HEADER_HTML = """
+<div class="header-container">
+    <div>
+        <div class="header-title">UNION BANK OF INDIA</div>
+        <div class="header-subtitle">
+            GenAI Content Personalization & Customer Engagement Bot
+        </div>
+    </div>
+</div>
+"""
+st.markdown(HEADER_HTML, unsafe_allow_html=True)
 
 # ---------- SESSION STATE ----------
 if "messages" not in st.session_state:
@@ -64,61 +86,7 @@ if "customer_id" not in st.session_state:
     st.session_state.customer_id = "C00001"
 
 if "use_llm" not in st.session_state:
-    # For now keep False (dummy variants) – you can switch later once Ollama is ready.
-    st.session_state.use_llm = False
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-LOGO_PATH = os.path.join(PROJECT_ROOT, "ui", "union_bank_logo.png")
-
-
-# ---------- HEADER WITH LOGO + TITLE ----------
-with st.container():
-    cols = st.columns([0.08, 0.92])
-    with cols[0]:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=48)
-        else:
-            st.write("🏦")
-    with cols[1]:
-        st.markdown(
-            """
-            <div class="brand-bar">
-                <div>
-                    <div class="brand-title">Union Bank of India – GenAI Personalization</div>
-                    <div class="brand-subtitle">
-                        Content Personalization & Generation Bot for Customer Engagement
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-st.markdown("---")
-
-# ---------- SIDEBAR ----------
-with st.sidebar:
-    st.header("📇 Customer & Settings")
-
-    st.session_state.customer_id = st.text_input(
-        "Customer ID",
-        value=st.session_state.customer_id,
-        help="Use IDs like C00001, C00002, etc. from synthetic data.",
-    )
-
-    st.session_state.use_llm = st.checkbox(
-        "Use Ollama LLM (if available)",
-        value=st.session_state.use_llm,
-        help=(
-            "Keep OFF to use dummy variants (no Ollama needed).\n"
-            "Turn ON only after you have Ollama + model configured."
-        ),
-    )
-
-    st.markdown("---")
-    st.caption(
-        "Tip: this UI calls the Python pipeline directly, no separate API server needed."
-    )
+    st.session_state.use_llm = False  # start with dummy variants
 
 
 # ---------- HELPER TO CALL BACKEND PIPELINE ----------
@@ -133,14 +101,88 @@ def run_personalization(customer_id: str, use_llm: bool):
         return None, str(e)
 
 
-# ---------- RENDER CHAT HISTORY ----------
+# ---------- SIDEBAR (LOGO + SETTINGS + COMPACT DASHBOARD) ----------
+with st.sidebar:
+
+    # --- BIG UNION BANK LOGO AT TOP LEFT ---
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=180)  # big logo
+    else:
+        st.markdown("## 🏦")
+
+    st.markdown("---")
+
+    # ---- CUSTOMER SETTINGS ----
+    st.header("📇 Customer & Settings")
+
+    st.session_state.customer_id = st.text_input(
+        "Customer ID",
+        value=st.session_state.customer_id,
+        help="Use IDs like C00001, C00002, etc. from synthetic data.",
+    )
+
+    st.session_state.use_llm = st.checkbox(
+        "Use Ollama LLM (if available)",
+        value=st.session_state.use_llm,
+        help="Keep OFF to use dummy variants (no Ollama needed).",
+    )
+
+    st.markdown("---")
+
+    # ---- COMPACT CUSTOMER 360 DASHBOARD IN SIDEBAR ----
+    st.subheader("🧩 Customer 360")
+
+    dashboard_data, dashboard_err = run_personalization(
+        st.session_state.customer_id,
+        use_llm=False,  # always use fast dummy variants for overview
+    )
+
+    if dashboard_err:
+        st.caption(f"Could not load overview: {dashboard_err}")
+    else:
+        cust = dashboard_data["customer"]
+        prod = dashboard_data["product"]
+
+        # Basic profile
+        st.markdown(f"**{cust['name']}**  \n`{cust['customer_id']}`")
+        st.caption(
+            f"{cust['city']} · Age {cust['age']} · {cust['lifecycle_stage']}"
+        )
+
+        # Scores (compact)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("Engagement", f"{cust['engagement_score']:.1f}")
+            st.metric("Value score", f"{cust['value_score']:.2f}")
+        with col_b:
+            st.metric("Avg balance", f"₹{cust['avg_monthly_balance']:,.0f}")
+            st.caption(f"Risk: `{cust['risk_profile']}`")
+
+        st.markdown("---")
+
+        # Recommended product (compact)
+        st.markdown("🎯 **Recommended Product**")
+        st.markdown(f"**{prod['name']}**  \n`{prod['category']}`")
+
+        for b in prod.get("benefits", [])[:3]:
+            st.write(f"- {b}")
+
+    st.markdown("---")
+    st.caption("This panel shows live customer context & recommendation.")
+
+
+# ---------- MAIN CHAT AREA ----------
+st.markdown("### 💬 Campaign Chat & Message Generation")
+
+# Render chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-
-# ---------- CHAT INPUT (BOTTOM, LIKE CHATGPT) ----------
-user_input = st.chat_input("Describe your campaign goal, or just press Enter to generate messages.")
+# Chat input at bottom
+user_input = st.chat_input(
+    "Describe your campaign goal, or just press Enter to generate messages."
+)
 
 if user_input is not None:
     user_input = user_input.strip()
@@ -151,7 +193,7 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 2) Call pipeline
+    # 2) Call pipeline (here we respect the 'use_llm' toggle)
     with st.chat_message("assistant"):
         with st.spinner("Generating personalized content..."):
             data, err = run_personalization(
@@ -234,4 +276,6 @@ if user_input:
 
             reply_text = "\n".join(lines)
             st.markdown(reply_text)
-            st.session_state.messages.append({"role": "assistant", "content": reply_text})
+            st.session_state.messages.append(
+                {"role": "assistant", "content": reply_text}
+            )
