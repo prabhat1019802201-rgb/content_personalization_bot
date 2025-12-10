@@ -1,0 +1,29 @@
+Customer context:
+- name: {{ name }}
+- preferred_language: {{ preferred_language }}
+- city: {{ city }}
+- segment: {{ segment }}
+- primary_channel: {{ primary_channel }}
+- recent_activity_summary: {{ recent_events }}
+
+Product context:
+- product_name: {{ product_name }}
+- product_category: {{ product_category }}
+- benefits: {{ benefits }}
+- disclaimers: {{ disclaimers }}
+
+Task:
+Generate 3 distinct message variants (A, B, C) for the given primary channel.
+
+Rules:
+- For SMS: keep body <= 250 characters.
+- For Email: keep body <= 120 words.
+- Use a clear call to action (e.g., "Apply now", "View details in the app").
+- Use the customer name where appropriate.
+- Use recent activity to make the message feel personal (e.g., refer to app usage or payments).
+- DO NOT invent fake numbers or returns. Keep the content generic but realistic.
+
+Output:
+- Return 3 JSON objects, one per line.
+- Each line: {"variant_tag": "...", "subject": "...", "body": "...", "disclaimers": [...]}
+- Use variant_tag "A" for first, "B" for second, "C" for third.
