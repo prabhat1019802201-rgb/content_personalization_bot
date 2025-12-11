@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_MODEL = "llama3:latest"
+DEFAULT_MODEL = "llama3.2:latest"
 
 
 def call_ollama_raw(
