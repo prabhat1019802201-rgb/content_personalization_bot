@@ -4,7 +4,9 @@ Customer context:
 - city: {{ city }}
 - segment: {{ segment }}
 - primary_channel: {{ primary_channel }}
-- recent_activity_summary: {{ recent_events }}
+
+Internal behavioral notes (for your reasoning only – do NOT mention directly):
+- {{ recent_events }}
 
 Product context:
 - product_name: {{ product_name }}
@@ -19,9 +21,9 @@ Rules:
 - For SMS: keep body <= 250 characters.
 - For Email: keep body <= 120 words.
 - Use a clear call to action (e.g., "Apply now", "View details in the app").
-- Use the customer name where appropriate.
-- Use recent activity to make the message feel personal (e.g., refer to app usage or payments).
-- DO NOT invent fake numbers or returns. Keep the content generic but realistic.
+- Prefer lifecycle-based hooks such as "as a new customer", "we miss you", rather than exposing internal app usage logs.
+- DO NOT mention internal behavioral notes explicitly (no counts of logins, declined transactions, etc.).
+- DO NOT use phrases like "we noticed your recent app activity" or "with 3 app logins".
 
 Output:
 - Return 3 JSON objects, one per line.

@@ -1,4 +1,7 @@
 from typing import Dict, List, Tuple
+import re
+
+BEHAVIOR_PATTERN = re.compile(r"\b\d+\s+app login", re.IGNORECASE)
 
 # Very simple banned phrases for prototype
 BANNED_PHRASES = [
@@ -7,21 +10,30 @@ BANNED_PHRASES = [
     "assured returns",
     "no eligibility checks",
     "pre-approved for everyone",
+    # Behavioral exposure we want to avoid
+    "we noticed you've been",
+    "we noticed your recent",
+    "we've noticed your",
+    "we saw your recent",
+    "recent app login activity",
+    "with 3 app logins",
+    "with 2 declined transactions",
+    "declined transaction",
+    "declined transactions",
 ]
 
 RATE_TOKENS = [
     "%", "percent", "interest rate", "rate of return", "roi",
 ]
 
-
 def check_banned_phrases(text: str) -> List[str]:
-    """
-    Return list of banned phrases found in the text (case-insensitive).
-    """
     lower = text.lower()
     found = [b for b in BANNED_PHRASES if b in lower]
-    return found
 
+    if BEHAVIOR_PATTERN.search(lower):
+        found.append("explicit_app_login_count")
+
+    return found
 
 def needs_rate_disclaimer(text: str) -> bool:
     """
