@@ -1,0 +1,26 @@
+{
+  "campaign_id": "cust_C00002",
+  "variant_tag": "A",
+  "created_at": 1765522856,
+  "items": [
+    {
+      "prompt": "Clean editorial marketing photo with clear negative space for overlay text.. Focus: . Style: clean, high contrast, photography. shallow depth of field, crisp subject",
+      "variants": [
+        {
+          "size": [
+            1200,
+            400
+          ],
+          "file": "D:\\Prabhat\\Projects\\content_personalization_bot\\assets\\creatives\\cust_C00002_A_1765522856\\A_0_1200x400.png",
+          "review": {
+            "score": 0.7,
+            "blocked": false,
+            "comments": [
+              "vlm_error:HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000016B1D2CBCE0>: Failed t"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

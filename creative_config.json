@@ -1,14 +1,9 @@
 {
-  "text_model_choice": "Default (rule-based)",
-  "custom_ollama_model": "",
-  "image_model_choice": "Default (stub)",
+  "text_model": "llama3.1:8b",
+  "image_model": "Default (stub)",
   "creative_kit": {
     "banner": true,
     "whatsapp": true,
     "email": true
-  },
-  "width": 1200,
-  "height": 400,
-  "steps": 20,
-  "device": "cuda"
+  }
 }
