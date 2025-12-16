@@ -1,281 +1,393 @@
+# ui/streamlit_app.py
 import os
+import json
+import base64
 import streamlit as st
 
-from engine.pipeline import generate_for_customer
+from engine.pipeline import generate_for_customer, detect_intent
+from engine.campaigns import get_top_customers_for_product
 
-# ---------- BASIC PAGE CONFIG ----------
+# =============================================================================
+# PAGE CONFIG
+# =============================================================================
 st.set_page_config(
     page_title="Union Bank GenAI Personalization",
     layout="wide",
-    page_icon="💬",
+    page_icon="🏦",
 )
 
-# ---------- GLOBAL CSS ----------
-BASE_CSS = """
+# =============================================================================
+# CSS
+# =============================================================================
+st.markdown("""
 <style>
-/* Hide Streamlit default menu & footer */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-
-/* Make chat wider & cleaner */
-.block-container {
-    padding-top: 0.8rem;
-    padding-bottom: 0.8rem;
-}
-
-/* Chat bubble width */
-[data-testid="stChatMessage"] {
-    max-width: 900px;
-}
-
-/* Header styles */
-.header-container {
-    display: flex;
-    align-items: flex-start;
-    border-bottom: 2px solid #B40001;  /* Union Bank red */
-    padding-bottom: 0.4rem;
-    margin-bottom: 0.8rem;
-}
-
-.header-title {
-    font-size: 1.6rem;
-    font-weight: 900;
-    color: #B40001;
-    letter-spacing: 0.6px;
-}
-
-.header-subtitle {
-    font-size: 0.9rem;
-    margin-top: 0.1rem;
-    color: #444444;
-}
+[data-testid="stChatMessage"] {max-width: 900px;}
 </style>
-"""
-st.markdown(BASE_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
+# =============================================================================
+# PATHS
+# =============================================================================
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 LOGO_PATH = os.path.join(PROJECT_ROOT, "ui", "union_bank_logo.png")
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "creative_config.json")
+CUSTOMERS_CSV = os.path.join(PROJECT_ROOT, "data", "customers.csv")
+PRODUCTS_CSV = os.path.join(PROJECT_ROOT, "data", "products.csv")
 
-# ---------- MAIN PAGE HEADER (NO LOGO, ONLY TITLE) ----------
-HEADER_HTML = """
-<div class="header-container">
-    <div>
-        <div class="header-title">UNION BANK OF INDIA</div>
-        <div class="header-subtitle">
-            GenAI Content Personalization & Customer Engagement Bot
-        </div>
-    </div>
-</div>
-"""
-st.markdown(HEADER_HTML, unsafe_allow_html=True)
+# =============================================================================
+# SESSION STATE (CRITICAL – DO NOT REMOVE)
+# =============================================================================
+st.session_state.setdefault("customer_id", "C00001")
+st.session_state.setdefault("messages", [])
+st.session_state.setdefault("creative_kit", {"banner": True, "whatsapp": True, "email": True})
+st.session_state.setdefault("text_model_choice", "Default (rule-based)")
+st.session_state.setdefault("image_model_choice", "Default (stub)")
+st.session_state.setdefault("custom_ollama_model", "")
 
-# ---------- SESSION STATE ----------
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "👋 Namaste! I’m your **Union Bank GenAI personalization assistant**.\n\n"
-                "Enter a customer ID on the left, then send a message here to generate "
-                "personalized A/B/C content and see the best variant."
-            ),
-        }
-    ]
+st.session_state.setdefault("campaign_list", [])
+st.session_state.setdefault("campaign_page", 0)
 
-if "customer_id" not in st.session_state:
-    st.session_state.customer_id = "C00001"
+# =============================================================================
+# SAFE BACKEND CALL
+# =============================================================================
+def safe_generate(customer_id, **kwargs):
+    res = generate_for_customer(customer_id, **kwargs)
+    if isinstance(res, tuple):
+        data, err = res
+        if err:
+            raise RuntimeError(err)
+        return data
+    return res if isinstance(res, dict) else {}
 
-if "use_llm" not in st.session_state:
-    st.session_state.use_llm = False  # start with dummy variants
+# =============================================================================
+# HEADER
+# =============================================================================
+st.markdown("""
+### Union Bank of India – GenAI Personalization  
+Customer Engagement • Campaign Targeting • Creative Intelligence
+""")
+st.markdown("---")
 
-
-# ---------- HELPER TO CALL BACKEND PIPELINE ----------
-def run_personalization(customer_id: str, use_llm: bool):
-    """
-    Call our engine.pipeline and handle errors cleanly.
-    """
-    try:
-        result = generate_for_customer(customer_id, use_llm=use_llm)
-        return result, None
-    except Exception as e:
-        return None, str(e)
-
-
-# ---------- SIDEBAR (LOGO + SETTINGS + COMPACT DASHBOARD) ----------
+# =============================================================================
+# SIDEBAR
+# =============================================================================
 with st.sidebar:
 
-    # --- BIG UNION BANK LOGO AT TOP LEFT ---
+    # Logo
     if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=180)  # big logo
-    else:
-        st.markdown("## 🏦")
+        with open(LOGO_PATH, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        st.markdown(
+            f"<div style='text-align:center'><img src='data:image/png;base64,{b64}' width='220'/></div>",
+            unsafe_allow_html=True
+        )
 
     st.markdown("---")
-
-    # ---- CUSTOMER SETTINGS ----
-    st.header("📇 Customer & Settings")
+    st.header("📇 Customer Settings")
 
     st.session_state.customer_id = st.text_input(
         "Customer ID",
-        value=st.session_state.customer_id,
-        help="Use IDs like C00001, C00002, etc. from synthetic data.",
+        value=st.session_state.customer_id
     )
 
-    st.session_state.use_llm = st.checkbox(
-        "Use Ollama LLM (if available)",
-        value=st.session_state.use_llm,
-        help="Keep OFF to use dummy variants (no Ollama needed).",
-    )
-
+    # ---------------- Customer 360 ----------------
     st.markdown("---")
+    st.subheader("🔎 Customer 360")
 
-    # ---- COMPACT CUSTOMER 360 DASHBOARD IN SIDEBAR ----
-    st.subheader("🧩 Customer 360")
+    try:
+        rec_data = safe_generate(st.session_state.customer_id, use_llm=False)
+    except Exception as e:
+        rec_data = {}
+        st.warning(f"Customer load failed: {e}")
 
-    dashboard_data, dashboard_err = run_personalization(
-        st.session_state.customer_id,
-        use_llm=False,  # always use fast dummy variants for overview
-    )
+    customer = rec_data.get("customer", {}) if isinstance(rec_data, dict) else {}
 
-    if dashboard_err:
-        st.caption(f"Could not load overview: {dashboard_err}")
-    else:
-        cust = dashboard_data["customer"]
-        prod = dashboard_data["product"]
+    if customer:
+        st.markdown(f"""
+**{customer.get("name","Unknown")}**  
+ID: `{customer.get("customer_id","-")}`  
+Age: {customer.get("age","-")}  
+City: {customer.get("city","-")}  
+Channel: {customer.get("primary_channel","-")}
+""")
 
-        # Basic profile
-        st.markdown(f"**{cust['name']}**  \n`{cust['customer_id']}`")
         st.caption(
-            f"{cust['city']} · Age {cust['age']} · {cust['lifecycle_stage']}"
+            f"Lifecycle: {customer.get('lifecycle_stage','-')} • "
+            f"Risk: {customer.get('risk_profile','-')}"
         )
 
-        # Scores (compact)
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Engagement", f"{cust['engagement_score']:.1f}")
-            st.metric("Value score", f"{cust['value_score']:.2f}")
-        with col_b:
-            st.metric("Avg balance", f"₹{cust['avg_monthly_balance']:,.0f}")
-            st.caption(f"Risk: `{cust['risk_profile']}`")
+        cols = st.columns(2)
+        cols[0].metric("Avg Balance", f"₹{customer.get('avg_monthly_balance','-')}")
+        cols[1].metric("Tenure (months)", customer.get("relationship_tenure_months","-"))
+    else:
+        st.info("Customer not found")
 
-        st.markdown("---")
-
-        # Recommended product (compact)
-        st.markdown("🎯 **Recommended Product**")
-        st.markdown(f"**{prod['name']}**  \n`{prod['category']}`")
-
-        for b in prod.get("benefits", [])[:3]:
-            st.write(f"- {b}")
-
+    # ---------------- Recommended Product ----------------
     st.markdown("---")
-    st.caption("This panel shows live customer context & recommendation.")
+    st.subheader("🔍 Recommended Product")
 
+    product = rec_data.get("product", {}) if isinstance(rec_data, dict) else {}
+    if isinstance(product, dict) and product:
+        st.markdown(f"""
+**{product.get("name","")}**  
+Category: {product.get("category","")}
+""")
+    else:
+        st.caption("No product recommendation")
 
-# ---------- MAIN CHAT AREA ----------
-st.markdown("### 💬 Campaign Chat & Message Generation")
+    # ---------------- Advanced Config ----------------
+    st.markdown("---")
+    st.subheader("⚙️ Advanced Options")
 
-# Render chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    with st.expander("Model & Creative Settings"):
 
-# Chat input at bottom
-user_input = st.chat_input(
-    "Describe your campaign goal, or just press Enter to generate messages."
-)
+        st.selectbox(
+            "Text model",
+            ["Default (rule-based)", "qwen2.5vl:7b", "llama3.1:8b"],
+            key="text_model_choice"
+        )
 
-if user_input is not None:
-    user_input = user_input.strip()
+        st.text_input("Custom Ollama model", key="custom_ollama_model")
 
-if user_input:
-    # 1) Add user message
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+        st.selectbox(
+            "Image model",
+            ["Default (stub)", "Automatic1111", "Diffusers SDXL", "No image"],
+            key="image_model_choice"
+        )
 
-    # 2) Call pipeline (here we respect the 'use_llm' toggle)
-    with st.chat_message("assistant"):
-        with st.spinner("Generating personalized content..."):
-            data, err = run_personalization(
-                st.session_state.customer_id,
-                use_llm=st.session_state.use_llm,
+        ck = st.session_state.creative_kit
+        st.session_state.creative_kit = {
+            "banner": st.checkbox("Banner", ck["banner"]),
+            "whatsapp": st.checkbox("WhatsApp", ck["whatsapp"]),
+            "email": st.checkbox("Email", ck["email"]),
+        }
+
+        if st.button("💾 Save configuration"):
+            with open(CONFIG_PATH, "w") as f:
+                json.dump({
+                    "text_model": st.session_state.text_model_choice,
+                    "image_model": st.session_state.image_model_choice,
+                    "creative_kit": st.session_state.creative_kit
+                }, f, indent=2)
+            st.success("Saved")
+
+# =============================================================================
+# MAIN TABS
+# =============================================================================
+tab_chat, tab_campaign = st.tabs(["💬 Chat Mode", "📢 Campaign Mode"])
+
+# =============================================================================
+# CHAT MODE
+# =============================================================================
+with tab_chat:
+
+    # Render chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat input
+    user_input = st.chat_input("Type a message and press Enter...")
+
+# 🔒 IMPORTANT: only trigger when real text is entered
+    if user_input:
+       st.session_state.messages.append({"role": "user", "content": user_input})
+
+       with st.chat_message("user"):
+         st.markdown(user_input)
+
+       intent = detect_intent(user_input)
+
+       with st.chat_message("assistant"):
+
+        # ---------------- GENERIC CHAT ----------------
+        if intent == "GENERIC_CHAT":
+            reply = (
+                "👋 Hello! I can help you with:\n\n"
+                "- Customer profile & insights\n"
+                "- Personalized marketing messages\n"
+                "- Campaign targeting\n\n"
+                "Try asking:\n"
+                "• *Tell me about C00001*\n"
+                "• *Generate marketing content for this customer*"
             )
-
-        if err is not None:
-            st.error(f"❌ Error: {err}")
+            st.markdown(reply)
             st.session_state.messages.append(
-                {"role": "assistant", "content": f"❌ Error: {err}"}
+                {"role": "assistant", "content": reply}
             )
+
+        # ---------------- CUSTOMER INFO ----------------
+        elif intent == "CUSTOMER_INFO":
+            with st.spinner("Fetching customer details..."):
+                data = generate_for_customer(
+                    st.session_state.customer_id,
+                    use_llm=False
+                )
+
+            cust = data.get("customer", {})
+            metrics = data.get("metrics", {})
+            events = data.get("recent_events", [])
+
+            reply = f"""
+              ### 👤 Customer 360 Overview
+
+              **Name:** {cust.get('name')}
+              **Customer ID:** `{cust.get('customer_id')}`
+              **City:** {cust.get('city')}
+              **Lifecycle:** {cust.get('lifecycle_stage')}
+              **Risk Profile:** {cust.get('risk_profile')}
+
+              **Avg Monthly Balance:** ₹{cust.get('avg_monthly_balance')}
+              **Engagement Score:** {metrics.get('engagement_score')}
+             """
+
+            st.markdown(reply)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": reply}
+            )
+
+        # ---------------- MARKETING GENERATION ----------------
+        elif intent == "MARKETING_GEN":
+            with st.spinner("Generating personalized marketing content..."):
+                data = generate_for_customer(
+                          st.session_state.customer_id,
+                          use_llm=True,
+                          text_model_choice=st.session_state.get("text_model_choice"),
+                          image_model_choice=st.session_state.get("image_model_choice"),
+                          creative_kit=st.session_state.get("creative_kit"),
+                          )
+
+            cust = data.get("customer", {})
+            prod = data.get("product", {})
+            selected = data.get("selected", {})
+
+            st.markdown(
+                f"""
+### 📨 Personalized Marketing Content
+
+**Customer:** {cust.get('name')}
+**Product:** {prod.get('name')}
+"""
+            )
+
+            for channel, variant in selected.items():
+                if not variant:
+                    continue
+                st.markdown(f"#### {channel.upper()}")
+                if variant.get("subject"):
+                    st.markdown(f"**Subject:** {variant.get('subject')}")
+                st.markdown(f"> {variant.get('body')}")
+            creative = data.get("creative_result")
+
+            if creative:
+               st.markdown("### 🎨 Banner Creative")
+
+               for item in creative.get("meta", {}).get("items", []):
+                   for v in item.get("variants", []):
+                       img_path = v.get("file")
+
+                       if img_path and os.path.exists(img_path):
+                            st.image(img_path, use_column_width=True)
+
+            st.session_state.messages.append(
+                {"role": "assistant", "content": "Marketing content generated."}
+            )
+
+# =============================================================================
+# CAMPAIGN MODE TAB — CSV STYLE WITH PAGINATION
+# =============================================================================
+with tab_campaign:
+    st.header("📢 Campaign Mode – Target Customers")
+
+    # ---------- Product selection ----------
+    product_id = st.text_input(
+        "Product ID",
+        value=st.session_state.get("campaign_product_id", "P001"),
+        help="Example: P001, P007 etc."
+    )
+
+    # ---------- Fetch customers ----------
+    if st.button("Fetch Target Customers"):
+        with st.spinner("Fetching targeted customers..."):
+            try:
+                cust_ids = get_top_customers_for_product(product_id)
+
+                if not cust_ids:
+                    st.warning("No customers found for this product.")
+                else:
+                    st.session_state.campaign_product_id = product_id
+                    st.session_state.campaign_list = list(map(str, cust_ids))
+                    st.session_state.campaign_page = 0
+                    st.success(f"Found {len(cust_ids)} customers")
+
+            except Exception as e:
+                st.error(f"Error fetching customers: {e}")
+
+    # ---------- Show table with pagination ----------
+    if "campaign_list" in st.session_state and st.session_state.campaign_list:
+
+        PAGE_SIZE = 20
+
+        customers = st.session_state.campaign_list
+        page = st.session_state.campaign_page
+        total_customers = len(customers)
+        total_pages = (total_customers + PAGE_SIZE - 1) // PAGE_SIZE
+
+        start = page * PAGE_SIZE
+        end = start + PAGE_SIZE
+        page_customers = customers[start:end]
+
+        st.markdown(
+            f"### Showing customers {start + 1} – {min(end, len(customers))} "
+            f"of {len(customers)}"
+        )
+
+        # ---------- Load customer CSV for enrichment ----------
+        import pandas as pd
+        cust_csv = os.path.join(PROJECT_ROOT, "data", "customers.csv")
+
+        if os.path.exists(cust_csv):
+            cdf = pd.read_csv(cust_csv, dtype=str)
+            rows = []
+
+            for cid in page_customers:
+                row = cdf[cdf["customer_id"] == cid]
+                if not row.empty:
+                    r = row.iloc[0]
+                    rows.append({
+                        "Customer ID": cid,
+                        "Name": r.get("name", ""),
+                        "City": r.get("city", ""),
+                        "Language": r.get("preferred_language", ""),
+                        "Lifecycle": r.get("lifecycle_stage", ""),
+                        "Risk": r.get("risk_profile", "")
+                    })
+                else:
+                    rows.append({"Customer ID": cid})
+
+            df_show = pd.DataFrame(rows)
+            st.dataframe(df_show, use_container_width=True)
+
         else:
-            cust = data["customer"]
-            prod = data["product"]
-            selected = data["selected"]
-            variants_scored = data["variants_scored"]
-
-            # Build a readable reply
-            lines = []
-
-            lines.append(
-                f"📨 **Personalized message for {cust['name']}**  \n"
-                f"- Customer ID: `{cust['customer_id']}`  \n"
-                f"- Segment: `{cust['segment']}`  \n"
-                f"- Preferred language: `{cust['preferred_language']}`  \n"
-                f"- Primary channel: `{cust['primary_channel']}`  \n"
-                f"- Product: **{prod['name']}** ({prod['category']})  \n"
+            # fallback: show IDs only
+            st.dataframe(
+                pd.DataFrame({"Customer ID": page_customers}),
+                use_container_width=True
             )
 
-            if selected:
-                lines.append("\n### ✅ Selected Variant")
-                lines.append(f"**Variant:** `{selected.get('variant_tag', 'N/A')}`  ")
+        # ---------- Pagination controls ----------
+        col_prev, col_next = st.columns([1, 1])
 
-                body = (selected.get("body") or "").strip()
-                subject = (selected.get("subject") or "").strip()
-                disclaimers = selected.get("disclaimers") or []
+        with col_prev:
+            if st.button("⬅ Previous", disabled=(page <= 0)):
+              st.session_state.campaign_page -= 1
+              st.rerun()
 
-                if cust["primary_channel"] == "sms":
-                    lines.append("**SMS Text:**")
-                    lines.append(f"> {body}")
-                elif cust["primary_channel"] == "email":
-                    lines.append(f"**Subject:** {subject}")
-                    lines.append("**Body:**")
-                    lines.append(f"> {body}")
-                else:  # app
-                    lines.append(f"**App Banner Title:** {subject}")
-                    lines.append("**App Banner Text:**")
-                    lines.append(f"> {body[:200]}")
+        with col_next:
+            if st.button("Next ➡", disabled=(page >= total_pages)):
+            ##if st.button("Next ➡", disabled=False):
+               st.session_state.campaign_page += 1
+               st.rerun()
 
-                if disclaimers:
-                    lines.append("\n**Disclaimers:**")
-                    for d in disclaimers:
-                        lines.append(f"- {d}")
-
-            # Show all variants with scores
-            if variants_scored:
-                lines.append("\n---\n")
-                lines.append("### 🅰🅱🅲 All Variants & Scores\n")
-                for item in variants_scored:
-                    score = item["score"]
-                    v = item["variant"]
-                    tag = v.get("variant_tag", "?")
-                    compliant = v.get("compliant", True)
-                    rejected = v.get("rejected_by_policy", False)
-                    reason = v.get("rejection_reason", "")
-
-                    body = (v.get("body") or "").strip().replace("\n", "  \n")
-
-                    status = "OK"
-                    if rejected:
-                        status = f"REJECTED ({reason})"
-                    elif not compliant:
-                        status = "NON-COMPLIANT"
-
-                    lines.append(
-                        f"**Variant {tag}** — Score: `{round(score, 2)}` | Status: `{status}`  \n"
-                        f"> {body}\n"
-                    )
-
-            reply_text = "\n".join(lines)
-            st.markdown(reply_text)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": reply_text}
-            )

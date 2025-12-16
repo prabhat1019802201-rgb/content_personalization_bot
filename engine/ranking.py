@@ -71,3 +71,42 @@ def rank_variants(variants: List[Dict], customer: Dict, channel: str) -> List[Tu
         scored.append((s, v))
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored
+
+# engine/ranking.py
+
+def rank_customers_for_product(product_id: str, customers_df):
+    """
+    Returns a ranked list of customer_ids for a given product.
+    """
+
+    if customers_df is None or customers_df.empty:
+        return []
+
+    # ✅ FIX: convert DataFrame → list of dicts
+    customers = customers_df.to_dict("records")
+
+    ranked = []
+
+    for c in customers:
+        if not isinstance(c, dict):
+            continue
+
+        score = 0.0
+
+        # Example business rules (keep yours, this is safe)
+        if c.get("lifecycle_stage") == "active":
+            score += 1.0
+
+        if c.get("risk_profile") in ("low", "medium"):
+            score += 0.5
+
+        if c.get("avg_monthly_balance", 0) and float(c.get("avg_monthly_balance", 0)) > 50000:
+            score += 1.0
+
+        ranked.append((score, c.get("customer_id")))
+
+    # sort by score desc
+    ranked.sort(key=lambda x: x[0], reverse=True)
+
+    # return only customer_ids
+    return [cid for _, cid in ranked if cid]

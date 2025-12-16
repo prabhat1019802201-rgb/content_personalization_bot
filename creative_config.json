@@ -1,0 +1,9 @@
+{
+  "text_model": "llama3.1:8b",
+  "image_model": "Automatic1111",
+  "creative_kit": {
+    "banner": false,
+    "whatsapp": false,
+    "email": true
+  }
+}

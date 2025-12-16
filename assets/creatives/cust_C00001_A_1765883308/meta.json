@@ -1,0 +1,26 @@
+{
+  "campaign_id": "cust_C00001",
+  "variant_tag": "A",
+  "created_at": 1765883308,
+  "items": [
+    {
+      "prompt": "Clean editorial marketing photo with clear negative space for overlay text.. Focus: \"Experience the ease of saving with Union Bank of India's Easy Savings. Get higher interest rates on your fixed deposits in Visakhapatnam. Open an account today!\". Style: clean, high contrast, photography. shallow depth of field, crisp subject",
+      "variants": [
+        {
+          "size": [
+            1200,
+            400
+          ],
+          "file": "D:\\Prabhat\\Projects\\content_personalization_bot\\assets\\creatives\\cust_C00001_A_1765883308\\A_0_1200x400.png",
+          "review": {
+            "score": 0.7,
+            "blocked": false,
+            "comments": [
+              "vlm_error:Extra data: line 2 column 1 (char 99)"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

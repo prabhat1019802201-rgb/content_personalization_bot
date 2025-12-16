@@ -1,117 +1,212 @@
-import json
-from typing import Dict
+# engine/prompting.py
+"""
+Prompt construction + LLM invocation.
+Generates best-of-3 variants per channel.
+"""
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-import pandas as pd
+from typing import Dict, List
+from engine.llm_client import call_llm
+import sys
 
-from engine.data_loader import load_all
-from engine.features_segmenter import build_customer_feature_table
+def _dbg(msg):
+    print(f"[PROMPTING] {msg}", file=sys.stderr)
+# -----------------------------------------------------------------------------
+# Prompt builders
+# -----------------------------------------------------------------------------
 
-# Setup Jinja2 environment to load templates from ../templates
-import os
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-TEMPLATES_DIR = os.path.join(PROJECT_ROOT, "templates")
+def _base_context(customer: dict, product: dict) -> str:
+    return f"""
+You are a senior bank marketing copywriter.
 
-env = Environment(
-    loader=FileSystemLoader(TEMPLATES_DIR),
-    autoescape=select_autoescape(enabled_extensions=("j2",)),
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
+Customer profile:
+- Name: {customer.get('name')}
+- Age: {customer.get('age')}
+- City: {customer.get('city')}
+- Lifecycle stage: {customer.get('lifecycle_stage')}
+- Risk profile: {customer.get('risk_profile')}
+- Avg monthly balance: {customer.get('avg_monthly_balance')}
 
-SYSTEM_PROMPT_PATH = os.path.join(TEMPLATES_DIR, "prompt_system.txt")
+Product:
+- Name: {product.get('name')}
+- Category: {product.get('category')}
+- Description: {product.get('description', '')}
+
+Tone:
+- Professional
+- Trustworthy
+- Simple banking language
+""".strip()
 
 
-def load_system_prompt() -> str:
-    with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+def _channel_prompt(channel: str) -> str:
+    if channel == "banner":
+        return """
+Generate 3 DIFFERENT banner headlines.
+Each headline must be max 8 words.
+No emojis.
+Return as:
+A: ...
+B: ...
+C: ...
+""".strip()
+
+    if channel == "whatsapp":
+        return """
+Generate 3 DIFFERENT WhatsApp marketing messages.
+Each message:
+- Friendly
+- 2–3 short lines
+- Includes CTA
+Return as:
+A: ...
+B: ...
+C: ...
+""".strip()
+
+    if channel == "email":
+        return """
+Generate 3 DIFFERENT marketing emails.
+Each must include:
+- Subject line
+- Body (short paragraph)
+Return as:
+A:
+Subject: ...
+Body: ...
+
+B:
+Subject: ...
+Body: ...
+
+C:
+Subject: ...
+Body: ...
+""".strip()
+
+    return ""
 
 
-def summarize_recent_events(customer_id: str, events: pd.DataFrame, limit: int = 5) -> str:
+# -----------------------------------------------------------------------------
+# Public API
+# -----------------------------------------------------------------------------
+
+def build_prompts_per_channel(
+    customer: dict,
+    product: dict,
+    use_llm: bool = True,
+    n: int = 3,
+    model: str | None = None,
+):
     """
-    Take the last few events for a customer and turn them into a short summary string.
+    Returns:
+    {
+      "banner": [variant_dict, ...],
+      "whatsapp": [...],
+      "email": [...]
+    }
     """
-    ev = events[events["customer_id"] == customer_id].sort_values("event_ts", ascending=False).head(limit)
-    if ev.empty:
-        return "no recent activity"
 
-    # Example summary: "3x app_login, 1x fund_transfer, 1x bill_pay"
-    counts = ev["event_type"].value_counts()
-    parts = [f"{cnt}x {etype}" for etype, cnt in counts.items()]
-    return ", ".join(parts)
+    _dbg("build_prompts_per_channel called")
+    _dbg(f"use_llm={use_llm}, model={model}")
 
+    channels = ["banner", "whatsapp", "email"]
+    results = {}
 
-def choose_product_for_customer(customer_row: pd.Series, products: pd.DataFrame) -> Dict:
+    customer_name = customer.get("name", "Customer")
+    product_name = product.get("name", "our product")
+
+    for channel in channels:
+        variants = []
+
+        for i in range(n):
+            variant_tag = chr(ord("A") + i)
+
+            prompt = f"""
+You are a banking marketing expert.
+
+Create a {channel.upper()} marketing message.
+
+Customer:
+- Name: {customer_name}
+- Segment: {customer.get("segment")}
+- City: {customer.get("city")}
+
+Product:
+- Name: {product_name}
+- Category: {product.get("category")}
+
+Rules:
+- Tone: professional, friendly
+- Bank: Union Bank of India
+- Avoid emojis
+- Short and clear
+
+Return only the message text.
+"""
+
+            _dbg(f"Calling LLM for {channel} variant {variant_tag}")
+
+            if use_llm:
+                try:
+                    from engine.llm_client import call_llm
+                    text = call_llm(prompt, model=model)
+                except Exception as e:
+                    _dbg(f"LLM ERROR: {e}")
+                    text = ""
+            else:
+                text = f"{product_name} designed for {customer_name}."
+
+            variants.append({
+                "variant_tag": variant_tag,
+                "subject": f"{product_name} from Union Bank" if channel == "email" else None,
+                "body": text.strip(),
+                "disclaimer": "T&C apply"
+            })
+
+        results[channel] = variants
+
+    _dbg("build_prompts_per_channel completed")
+    return results
+
+# -----------------------------------------------------------------------------
+# Output parser
+# -----------------------------------------------------------------------------
+
+def _parse_variants(channel: str, text: str) -> List[dict]:
     """
-    Very simple product selection:
-    - Filter by risk profile if present in eligibility_rules.
-    - Just pick the first matching product for now.
+    Parses A/B/C style output safely.
     """
-    risk = customer_row["risk_profile"]
-    balance = customer_row["avg_monthly_balance"]
+    variants = []
+    blocks = [b.strip() for b in text.split("\n") if b.strip()]
 
-    def is_eligible(prod_row) -> bool:
-        rules = json.loads(prod_row["eligibility_rules"])
-        min_balance = rules.get("min_balance", 0)
-        allowed_risks = rules.get("risk", [])
-        return (balance >= min_balance) and (risk in allowed_risks)
+    current = None
+    buf = []
 
-    eligible = products[products.apply(is_eligible, axis=1)]
-    if eligible.empty:
-        # fallback: just pick the first product
-        return products.iloc[0].to_dict()
-    return eligible.iloc[0].to_dict()
+    def flush(tag, lines):
+        body = "\n".join(lines).strip()
+        subject = None
 
+        if channel == "email":
+            for ln in lines:
+                if ln.lower().startswith("subject"):
+                    subject = ln.split(":", 1)[-1].strip()
 
-def build_prompts_for_customer(customer_id: str):
-    """
-    High-level helper:
-    - Load data and feature/segment table
-    - Find customer row
-    - Summarize recent events
-    - Pick a product
-    - Build system + user prompt strings
-    """
-    customers, events, products = load_all()
-    features = build_customer_feature_table()
+        variants.append({
+            "variant_tag": tag,
+            "subject": subject,
+            "body": body
+        })
 
-    row = features[features["customer_id"] == customer_id]
-    if row.empty:
-        raise ValueError(f"Customer {customer_id} not found")
+    for line in blocks:
+        if line.startswith(("A:", "B:", "C:")):
+            if current:
+                flush(current, buf)
+            current = line[0]
+            buf = [line[2:].strip()]
+        else:
+            buf.append(line)
 
-    cust = row.iloc[0]
-    recent_summary = summarize_recent_events(customer_id, events)
-    product = choose_product_for_customer(cust, products)
+    if current:
+        flush(current, buf)
 
-    # Prepare values for template
-    user_template = env.get_template("prompt_user.j2")
-    benefits = json.loads(product["benefit_bullets"])
-    disclaimers = json.loads(product["disclaimers"])
-
-    user_prompt = user_template.render(
-        name=cust["name"],
-        preferred_language=cust["preferred_language"],
-        city=cust["city"],
-        segment=cust["segment"],
-        primary_channel=cust["primary_channel"],
-        recent_events=recent_summary,
-        product_name=product["name"],
-        product_category=product["category"],
-        benefits=benefits,
-        disclaimers=disclaimers,
-    )
-
-    system_prompt = load_system_prompt()
-
-    return system_prompt, user_prompt, cust.to_dict(), product
-
-
-if __name__ == "__main__":
-    # Quick test
-    sp, up, cust, prod = build_prompts_for_customer("C00001")
-    print("=== SYSTEM PROMPT ===")
-    print(sp[:400], "...\n")
-    print("=== USER PROMPT ===")
-    print(up)
-    print("\nCustomer segment:", cust["segment"])
-    print("Product chosen :", prod["name"])
+    return variants
