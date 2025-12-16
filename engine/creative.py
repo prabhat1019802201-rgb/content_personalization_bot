@@ -29,6 +29,7 @@ from typing import List, Dict, Tuple, Optional, Callable
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import requests
 
+
 # Optional heavy imports guarded at runtime
 try:
     import torch
@@ -364,6 +365,8 @@ def generate_creatives_for_variant(
     steps: int = 20,
     seed: Optional[int] = None,
     device: Optional[str] = None,
+    product_context = dict,     
+    customer_context = dict,   
 ) -> Dict:
     """
     Generate creatives for a variant and return metadata.
@@ -389,7 +392,13 @@ def generate_creatives_for_variant(
 
     gen_fn = _select_image_fn()
 
-    prompts = generate_image_prompts(product_key, variant_brief, n_prompts=n_images)
+    visual_prompt = build_banner_visual_prompt(
+     product=product_context,
+     customer=customer_context,
+     headline=headline,
+    )
+
+    prompts = [visual_prompt]
 
     for idx, p in enumerate(prompts):
         # generate full-res image (target first output size)
@@ -455,3 +464,22 @@ if __name__ == "__main__":
     )
     print("Generated folder:", out["folder"])
     print("Meta items:", len(out["meta"]["items"]))
+
+def build_banner_visual_prompt(product, customer, headline):
+    city = customer.get("city", "")
+    product_name = product.get("name", "")
+    category = product.get("category", "banking")
+
+    return (
+        f"Professional Indian banking advertisement banner, "
+        f"Union Bank of India branding, "
+        f"{product_name} promotion, "
+        f"modern Indian customers, "
+        f"clean corporate style, "
+        f"green and white color palette, "
+        f"bank branch or digital banking background, "
+        f"city context {city}, "
+        f"high quality commercial photography, "
+        f"space for headline text, no text in image"
+    )
+

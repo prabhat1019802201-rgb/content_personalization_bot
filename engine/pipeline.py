@@ -173,13 +173,36 @@ def generate_for_customer(
         # =====================================================
         # MARKETING GENERATION (LLM)
         # =====================================================
-        per_channel_raw = build_prompts_per_channel(
-            cust_row,
-            product,
-            use_llm=True,
-            n=3,
-            model=text_model_choice,
+        # -----------------------------------------------------
+        # Respect creative_kit toggles (banner / whatsapp / email)
+        # -----------------------------------------------------
+
+        enabled_channels = []
+
+        ck = creative_kit or {}
+
+        if ck.get("banner"):
+           enabled_channels.append("banner")
+        if ck.get("whatsapp"):
+           enabled_channels.append("whatsapp")
+        if ck.get("email"):
+           enabled_channels.append("email")
+
+        per_channel_raw_all = build_prompts_per_channel(
+           cust_row,
+           product,
+           use_llm=True,
+           n=3,
+           model=text_model_choice,
         )
+
+        # 🔥 FILTER ONLY ENABLED CHANNELS
+        per_channel_raw = {
+         ch: variants
+         for ch, variants in per_channel_raw_all.items()
+         if ch in enabled_channels
+       }
+
 
         variants_scored = {}
         selected = {}
@@ -279,15 +302,18 @@ def generate_for_customer(
 
                     creative_result = generate_creatives_for_variant(
                        campaign_id=f"cust_{customer_id}",
-                       variant_tag="A",
+                       variant_tag=banner_variant.get("variant_tag", "A"),
                        product_key=product.get("category", "generic"),
                        variant_brief=banner_variant["body"][:200],
                        headline=banner_variant.get("subject") or product.get("name"),
                        subtitle=banner_variant["body"][:120],
                        cta_text="Know More",
                        n_images=1,
+                       product_context=product,          # ✅ NEW
+                       customer_context=cust_row, 
                        output_sizes=[(creative_width, creative_height)],
-                       image_model_choice=mapped.get("backend"),
+                       #image_model_choice=mapped.get("backend"),
+                       image_model_choice=image_model_choice,
                        steps=creative_steps,
                        device=mapped.get("device"),
                       )
