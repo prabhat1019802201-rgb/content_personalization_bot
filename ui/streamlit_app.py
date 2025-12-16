@@ -252,13 +252,12 @@ with tab_chat:
         elif intent == "MARKETING_GEN":
             with st.spinner("Generating personalized marketing content..."):
                 data = generate_for_customer(
-                    st.session_state.customer_id,
-                    use_llm=True,
-                    text_model_choice=st.session_state.get("text_model_choice"),
-                    custom_model=st.session_state.get("custom_ollama_model"),
-                    image_model_choice=st.session_state.get("image_model_choice"),
-                    creative_kit=st.session_state.get("creative_kit"),
-                )
+                          st.session_state.customer_id,
+                          use_llm=True,
+                          text_model_choice=st.session_state.get("text_model_choice"),
+                          image_model_choice=st.session_state.get("image_model_choice"),
+                          creative_kit=st.session_state.get("creative_kit"),
+                          )
 
             cust = data.get("customer", {})
             prod = data.get("product", {})
@@ -280,6 +279,17 @@ with tab_chat:
                 if variant.get("subject"):
                     st.markdown(f"**Subject:** {variant.get('subject')}")
                 st.markdown(f"> {variant.get('body')}")
+            creative = data.get("creative_result")
+
+            if creative:
+               st.markdown("### 🎨 Banner Creative")
+
+               for item in creative.get("meta", {}).get("items", []):
+                   for v in item.get("variants", []):
+                       img_path = v.get("file")
+
+                       if img_path and os.path.exists(img_path):
+                            st.image(img_path, use_column_width=True)
 
             st.session_state.messages.append(
                 {"role": "assistant", "content": "Marketing content generated."}

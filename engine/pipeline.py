@@ -233,29 +233,64 @@ def generate_for_customer(
                }]
 
             variants_scored[channel] = normalized
-            selected[channel] = normalized[0]["variant"] if normalized else None
+
+            # ✅ FINAL HARD GUARANTEE — NEVER RETURN EMPTY VARIANT
+            chosen = None
+
+            # 1️⃣ Prefer ranked output ONLY if it has real content
+            if normalized:
+                 v = normalized[0].get("variant", {})
+                 if isinstance(v, dict) and v.get("body"):
+                      chosen = v
+
+            # 2️⃣ Fallback to RAW LLM output (this is the key fix)
+            if not chosen and variants:
+                 raw = variants[0]
+                 if isinstance(raw, dict) and raw.get("body"):
+                   chosen = raw
+
+            # 3️⃣ Absolute last resort (should never happen)
+            if not chosen:
+              chosen = {
+              "variant_tag": "A",
+              "body": "Special offer curated just for you.",
+             }
+
+            selected[channel] = chosen
+
         # =====================================================
         # IMAGE GENERATION (OPTIONAL)
         # =====================================================
         creative_result = None
         ck = creative_kit or {"banner": True}
 
-        if ck.get("banner") and selected.get("banner"):
-            mapped = settings.map_image_choice(image_model_choice or "Default (stub)")
-            creative_result = generate_creatives_for_variant(
-                campaign_id=f"cust_{customer_id}",
-                variant_tag=selected["banner"].get("variant_tag", "A"),
-                product_key=product.get("category", "generic"),
-                variant_brief=(selected["banner"].get("body") or "")[:200],
-                headline=selected["banner"].get("subject") or product.get("name"),
-                subtitle=(selected["banner"].get("body") or "")[:120],
-                cta_text="Know More",
-                n_images=1,
-                output_sizes=[(creative_width, creative_height)],
-                image_model_choice=mapped.get("backend"),
-                steps=creative_steps,
-                device=mapped.get("device"),
-            )
+        if ck.get("banner") and image_model_choice and image_model_choice != "No image":
+
+               # fallback-safe banner variant
+               banner_variant = (
+                 selected.get("banner")
+                 or per_channel_raw.get("banner", [{}])[0]
+               )
+
+               if banner_variant and banner_variant.get("body"):
+                    print("🖼️ [PIPELINE] Generating banner image...")
+
+                    mapped = settings.map_image_choice(image_model_choice)
+
+                    creative_result = generate_creatives_for_variant(
+                       campaign_id=f"cust_{customer_id}",
+                       variant_tag="A",
+                       product_key=product.get("category", "generic"),
+                       variant_brief=banner_variant["body"][:200],
+                       headline=banner_variant.get("subject") or product.get("name"),
+                       subtitle=banner_variant["body"][:120],
+                       cta_text="Know More",
+                       n_images=1,
+                       output_sizes=[(creative_width, creative_height)],
+                       image_model_choice=mapped.get("backend"),
+                       steps=creative_steps,
+                       device=mapped.get("device"),
+                      )
 
         return {
             "customer": cust_row,
