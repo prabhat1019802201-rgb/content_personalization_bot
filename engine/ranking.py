@@ -74,39 +74,70 @@ def rank_variants(variants: List[Dict], customer: Dict, channel: str) -> List[Tu
 
 # engine/ranking.py
 
-def rank_customers_for_product(product_id: str, customers_df):
-    """
-    Returns a ranked list of customer_ids for a given product.
-    """
+PRODUCT_RULES = {
+    "P001": {  # Savings
+        "min_balance": 0,
+        "lifecycle": ["active", "onboarding"],
+        "weight": 1.0,
+    },
+    "P002": {  # Fixed Deposit
+        "min_balance": 50000,
+        "lifecycle": ["active"],
+        "weight": 2.0,
+    },
+    "P003": {  # Credit Card
+        "requires": "credit_card_holder",
+        "weight": 2.5,
+    },
+    "P004": {  # Personal Loan
+        "max_risk": ["low", "medium"],
+        "weight": 2.0,
+    },
+    "P005": {  # Home Loan
+        "min_balance": 100000,
+        "lifecycle": ["active"],
+        "weight": 3.0,
+    },
+    "P006": {  # Insurance
+        "lifecycle": ["active", "dormant"],
+        "weight": 1.5,
+    },
+    "P007": {  # Travel Insurance
+        "min_balance": 50000,
+        "weight": 2.0,
+    },
+}
 
-    if customers_df is None or customers_df.empty:
-        return []
-
-    # ✅ FIX: convert DataFrame → list of dicts
-    customers = customers_df.to_dict("records")
-
+def rank_customers_for_product(product_id, customers_df):
+    rules = PRODUCT_RULES.get(product_id, {})
     ranked = []
 
-    for c in customers:
-        if not isinstance(c, dict):
-            continue
+    for _, c in customers_df.iterrows():
+        score = 0
 
-        score = 0.0
-
-        # Example business rules (keep yours, this is safe)
+        # Base lifecycle score
         if c.get("lifecycle_stage") == "active":
-            score += 1.0
+            score += 3
+        elif c.get("lifecycle_stage") == "onboarding":
+            score += 1
 
-        if c.get("risk_profile") in ("low", "medium"):
-            score += 0.5
+        # Product-specific rules
+        bal = float(c.get("avg_monthly_balance", 0) or 0)
 
-        if c.get("avg_monthly_balance", 0) and float(c.get("avg_monthly_balance", 0)) > 50000:
-            score += 1.0
+        if "min_balance" in rules and bal >= rules["min_balance"]:
+            score += rules["weight"]
 
-        ranked.append((score, c.get("customer_id")))
+        if "lifecycle" in rules and c.get("lifecycle_stage") in rules["lifecycle"]:
+            score += rules["weight"]
 
-    # sort by score desc
-    ranked.sort(key=lambda x: x[0], reverse=True)
+        if "requires" in rules and c.get(rules["requires"]) is True:
+            score += rules["weight"]
 
-    # return only customer_ids
-    return [cid for _, cid in ranked if cid]
+        if "max_risk" in rules and c.get("risk_profile") in rules["max_risk"]:
+            score += rules["weight"]
+
+        ranked.append((score, c["customer_id"]))
+
+    ranked.sort(key=lambda x: x[0])         # ascending by score
+    return [cid for _, cid in ranked]
+
