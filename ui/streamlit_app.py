@@ -3,9 +3,11 @@ import os
 import json
 import base64
 import streamlit as st
+import pandas as pd
 
 from engine.pipeline import generate_for_customer, detect_intent
 from engine.campaigns import get_top_customers_for_product
+from engine.pipeline import recommend_top_products
 
 # =============================================================================
 # PAGE CONFIG
@@ -126,16 +128,22 @@ Channel: {customer.get("primary_channel","-")}
 
     # ---------------- Recommended Product ----------------
     st.markdown("---")
-    st.subheader("🔍 Recommended Product")
+    st.subheader("🔍 Recommended Products")
 
-    product = rec_data.get("product", {}) if isinstance(rec_data, dict) else {}
-    if isinstance(product, dict) and product:
-        st.markdown(f"""
-**{product.get("name","")}**  
-Category: {product.get("category","")}
-""")
+    recommended = rec_data.get("recommended_products", [])
+
+    if recommended:
+      for idx, p in enumerate(recommended, start=1):
+           name = p.get("name", "")
+           category = p.get("category", "")
+           badge = " ⭐" if idx == 1 else ""
+
+           st.markdown(f"""
+          **{idx}. {name}{badge}**  
+          Category: {category}
+       """)
     else:
-        st.caption("No product recommendation")
+       st.caption("No product recommendations available")
 
     # ---------------- Advanced Config ----------------
     st.markdown("---")
@@ -183,118 +191,140 @@ tab_chat, tab_campaign = st.tabs(["💬 Chat Mode", "📢 Campaign Mode"])
 # =============================================================================
 with tab_chat:
 
-    # Render chat history
+    # 1️⃣ Render entire chat history FIRST
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Chat input
+    # 2️⃣ Chat input MUST be last (Streamlit rule)
     user_input = st.chat_input("Type a message and press Enter...")
 
-# 🔒 IMPORTANT: only trigger when real text is entered
+    # 3️⃣ Handle input AFTER rendering history
     if user_input:
-       st.session_state.messages.append({"role": "user", "content": user_input})
+        # Save user message immediately
+        st.session_state.messages.append({
+            "role": "user",
+            "content": user_input
+        })
 
-       with st.chat_message("user"):
-         st.markdown(user_input)
+        intent = detect_intent(user_input)
 
-       intent = detect_intent(user_input)
+        # Prepare assistant response
+        reply = ""
 
-       with st.chat_message("assistant"):
+        with st.chat_message("assistant"):
 
-        # ---------------- GENERIC CHAT ----------------
-        if intent == "GENERIC_CHAT":
-            reply = (
-                "👋 Hello! I can help you with:\n\n"
-                "- Customer profile & insights\n"
-                "- Personalized marketing messages\n"
-                "- Campaign targeting\n\n"
-                "Try asking:\n"
-                "• *Tell me about C00001*\n"
-                "• *Generate marketing content for this customer*"
-            )
-            st.markdown(reply)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": reply}
-            )
-
-        # ---------------- CUSTOMER INFO ----------------
-        elif intent == "CUSTOMER_INFO":
-            with st.spinner("Fetching customer details..."):
-                data = generate_for_customer(
-                    st.session_state.customer_id,
-                    use_llm=False
+            # ---------- GENERIC CHAT ----------
+            if intent == "GENERIC_CHAT":
+                reply = (
+                    "👋 Hello! I can help you with:\n\n"
+                    "- Customer profile & insights\n"
+                    "- Product recommendations\n"
+                    "- Personalized marketing messages\n\n"
+                    f"Try asking:\n"
+                    f"• *Tell me about {st.session_state.customer_id}*\n"
+                    f"• *What product can be sold to this user?*\n"
+                    f"• *Generate marketing content for this customer*"
                 )
+                st.markdown(reply)
 
-            cust = data.get("customer", {})
-            metrics = data.get("metrics", {})
-            events = data.get("recent_events", [])
+            # ---------- CUSTOMER INFO ----------
+            elif intent == "CUSTOMER_INFO":
+                with st.spinner("Fetching customer details..."):
+                    data = generate_for_customer(
+                        st.session_state.customer_id,
+                        use_llm=False
+                    )
 
-            reply = f"""
-              ### 👤 Customer 360 Overview
+                cust = data.get("customer", {})
+                metrics = data.get("metrics", {})
 
-              **Name:** {cust.get('name')}
-              **Customer ID:** `{cust.get('customer_id')}`
-              **City:** {cust.get('city')}
-              **Lifecycle:** {cust.get('lifecycle_stage')}
-              **Risk Profile:** {cust.get('risk_profile')}
+                reply = f"""
+### 👤 Customer 360 Overview
 
-              **Avg Monthly Balance:** ₹{cust.get('avg_monthly_balance')}
-              **Engagement Score:** {metrics.get('engagement_score')}
-             """
+**Name:** {cust.get('name')}
+**Customer ID:** `{cust.get('customer_id')}`
+**City:** {cust.get('city')}
+**Lifecycle:** {cust.get('lifecycle_stage')}
+**Risk Profile:** {cust.get('risk_profile')}
 
-            st.markdown(reply)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": reply}
-            )
+**Avg Monthly Balance:** ₹{cust.get('avg_monthly_balance')}
+**Engagement Score:** {metrics.get('engagement_score')}
+"""
+                st.markdown(reply)
 
-        # ---------------- MARKETING GENERATION ----------------
-        elif intent == "MARKETING_GEN":
-            with st.spinner("Generating personalized marketing content..."):
-                data = generate_for_customer(
-                          st.session_state.customer_id,
-                          use_llm=True,
-                          text_model_choice=st.session_state.get("text_model_choice"),
-                          image_model_choice=st.session_state.get("image_model_choice"),
-                          creative_kit=st.session_state.get("creative_kit"),
-                          )
+            # ---------- PRODUCT ADVISORY ----------
+            elif intent == "PRODUCT_ADVISORY":
+                with st.spinner("Analyzing customer and recommending products..."):
+                    data = generate_for_customer(
+                        st.session_state.customer_id,
+                        use_llm=False
+                    )
 
-            cust = data.get("customer", {})
-            prod = data.get("product", {})
-            selected = data.get("selected", {})
+                cust = data.get("customer", {})
+                products = data.get("recommended_products", [])
 
-            st.markdown(
-                f"""
+                if not products:
+                    reply = "No suitable products found for this customer."
+                else:
+                    reply = f"""
+### 🧠 Product Advisory
+
+Based on **{cust.get('name')}**’s profile, the following products can be offered:
+"""
+                    for i, p in enumerate(products, 1):
+                        reply += f"""
+**{i}. {p.get('name')}**
+- Category: {p.get('category')}
+"""
+
+                st.markdown(reply)
+
+            # ---------- MARKETING GENERATION ----------
+            elif intent == "MARKETING_GEN":
+                with st.spinner("Generating personalized marketing content..."):
+                    data = generate_for_customer(
+                        st.session_state.customer_id,
+                        user_request=user_input,
+                        use_llm=True,
+                        text_model_choice=st.session_state.text_model_choice,
+                        image_model_choice=st.session_state.image_model_choice,
+                        creative_kit=st.session_state.creative_kit,
+                    )
+
+                cust = data.get("customer", {})
+                prod = data.get("product", {})
+                selected = data.get("selected", {})
+
+                reply = f"""
 ### 📨 Personalized Marketing Content
 
 **Customer:** {cust.get('name')}
 **Product:** {prod.get('name')}
 """
-            )
 
-            for channel, variant in selected.items():
-                if not variant:
-                    continue
-                st.markdown(f"#### {channel.upper()}")
-                if variant.get("subject"):
-                    st.markdown(f"**Subject:** {variant.get('subject')}")
-                st.markdown(f"> {variant.get('body')}")
-            creative = data.get("creative_result")
+                for channel, variant in selected.items():
+                    if not variant:
+                        continue
+                    reply += f"\n#### {channel.upper()}\n"
+                    if variant.get("subject"):
+                        reply += f"**Subject:** {variant.get('subject')}\n"
+                    reply += f"{variant.get('body')}\n"
 
-            if creative:
-               st.markdown("### 🎨 Banner Creative")
+                st.markdown(reply)
 
-               for item in creative.get("meta", {}).get("items", []):
-                   for v in item.get("variants", []):
-                       img_path = v.get("file")
+            else:
+                reply = "Sorry, I didn’t understand that."
+                st.markdown(reply)
 
-                       if img_path and os.path.exists(img_path):
-                            st.image(img_path, use_column_width=True)
+        # 4️⃣ Persist assistant reply LAST
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": reply
+        })
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": "Marketing content generated."}
-            )
-
+        # 5️⃣ Force rerun → keeps input fixed at bottom
+        st.rerun()
 # =============================================================================
 # CAMPAIGN MODE TAB — CSV STYLE WITH PAGINATION
 # =============================================================================

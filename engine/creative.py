@@ -358,15 +358,15 @@ def generate_creatives_for_variant(
     headline: str,
     subtitle: Optional[str],
     cta_text: Optional[str],
+    customer: Optional[dict] = None,   # ✅ ADD
+    product: Optional[dict] = None,    # ✅ ADD
     n_images: int = 2,
     output_sizes: Optional[List[Tuple[int, int]]] = None,
     image_gen_fn: Optional[Callable] = None,
     image_model_choice: str = "stub",
     steps: int = 20,
     seed: Optional[int] = None,
-    device: Optional[str] = None,
-    product_context = dict,     
-    customer_context = dict,   
+    device: Optional[str] = None,   
 ) -> Dict:
     """
     Generate creatives for a variant and return metadata.
@@ -393,9 +393,9 @@ def generate_creatives_for_variant(
     gen_fn = _select_image_fn()
 
     visual_prompt = build_banner_visual_prompt(
-     product=product_context,
-     customer=customer_context,
-     headline=headline,
+    product=product,
+    customer=customer,
+    headline=headline,
     )
 
     prompts = [visual_prompt]
@@ -466,8 +466,16 @@ if __name__ == "__main__":
     print("Meta items:", len(out["meta"]["items"]))
 
 def build_banner_visual_prompt(product, customer, headline):
+    # 🔒 SAFETY: customer may be str or dict
+    if not isinstance(customer, dict):
+        customer = {}
+
+    if not isinstance(product, dict):
+        product = {}
+
+    lifecycle = customer.get("lifecycle_stage", "")
+    product_name = product.get("name", "banking product")
     city = customer.get("city", "")
-    product_name = product.get("name", "")
     category = product.get("category", "banking")
 
     return (

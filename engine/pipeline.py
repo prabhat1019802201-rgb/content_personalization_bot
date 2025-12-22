@@ -1,9 +1,10 @@
 # engine/pipeline.py
 """
 Stable GenAI personalization pipeline
-- Backward compatible with existing UI
-- Supports analytics-only (use_llm=False)
-- Supports LLM marketing generation (use_llm=True)
+- Analytics (Customer 360) when use_llm=False
+- Marketing generation when use_llm=True
+- Product override from user prompt
+- Channel-aware generation (banner / whatsapp / email)
 """
 
 import traceback
@@ -26,10 +27,9 @@ import engine.settings as settings
 # =============================================================================
 
 def compute_engagement(events_df, customer_id, days=30):
-    now = datetime.now()
-    cutoff = now - timedelta(days=days)
-
+    cutoff = datetime.now() - timedelta(days=days)
     sub = events_df[events_df["customer_id"] == customer_id].copy()
+
     if not sub.empty:
         sub["event_ts"] = pd.to_datetime(sub["event_ts"], errors="coerce")
         sub = sub[sub["event_ts"] >= cutoff]
@@ -43,32 +43,30 @@ def compute_engagement(events_df, customer_id, days=30):
             score += 1
         elif et == "declined_txn":
             score += 0.5
-    return round(score, 3)
+    return round(score, 2)
 
 
 def compute_value_score(cust_row):
     bal = float(cust_row.get("avg_monthly_balance") or 0)
-    base = np.log1p(bal)
+    score = np.log1p(bal)
     if cust_row.get("credit_card_holder"):
-        base *= 1.2
-    return round(float(base), 3)
+        score *= 1.2
+    return round(float(score), 2)
 
 
-def infer_segment(cust_row, engagement, recent_issues):
+def infer_segment(cust_row, engagement):
     lifecycle = str(cust_row.get("lifecycle_stage") or "").lower()
     risk = str(cust_row.get("risk_profile") or "").lower()
+    bal = float(cust_row.get("avg_monthly_balance") or 0)
 
-    if recent_issues and recent_issues != "none":
-        return "SERVICE_RECOVERY"
     if lifecycle == "onboarding":
-        return "ONBOARDING_NEW"
+        return "ONBOARDING"
     if lifecycle == "dormant":
-        return "DORMANT_WINBACK"
+        return "WINBACK"
     if lifecycle == "active":
-        bal = float(cust_row.get("avg_monthly_balance") or 0)
         if bal >= 100000 and risk in ("low", ""):
-            return "ACTIVE_HIGH_VALUE"
-        return "ACTIVE_STANDARD"
+            return "HIGH_VALUE"
+        return "STANDARD"
     return "UNCLASSIFIED"
 
 
@@ -77,13 +75,27 @@ def get_recent_events(events_df, customer_id, n=5):
     if sub.empty:
         return []
     sub["event_ts"] = pd.to_datetime(sub["event_ts"], errors="coerce")
-    sub = sub.sort_values("event_ts", ascending=False)
-    return sub.head(n).to_dict(orient="records")
+    return (
+        sub.sort_values("event_ts", ascending=False)
+        .head(n)
+        .to_dict(orient="records")
+    )
 
+
+# =============================================================================
+# Product Recommendation
+# =============================================================================
 
 def recommend_product(products_df, cust_row):
+    scored = []
+
+    bal = float(cust_row.get("avg_monthly_balance") or 0)
+    lifecycle = cust_row.get("lifecycle_stage", "")
+    risk = cust_row.get("risk_profile", "")
+
     for _, r in products_df.iterrows():
-        rules = r.get("eligibility_rules")
+        score = 0
+        rules = r.get("eligibility_rules") or {}
 
         if isinstance(rules, str):
             try:
@@ -92,24 +104,59 @@ def recommend_product(products_df, cust_row):
             except Exception:
                 rules = {}
 
-        if not isinstance(rules, dict):
-            rules = {}
-
         min_bal = float(rules.get("min_balance", 0) or 0)
-        allowed_risk = rules.get("risk") or []
+        allowed_risk = rules.get("risk", [])
 
-        bal = float(cust_row.get("avg_monthly_balance") or 0)
-        cust_risk = cust_row.get("risk_profile")
+        if bal < min_bal:
+            continue
 
-        if bal >= min_bal:
-            if allowed_risk:
-                if cust_risk in allowed_risk:
-                    return r.to_dict()
-            else:
-                return r.to_dict()
+        score += min(bal / 50000, 5)
 
-    return products_df.iloc[0].to_dict()
+        if lifecycle == "active":
+            score += 2
+        elif lifecycle == "dormant":
+            score += 1
 
+        if allowed_risk:
+            score += 2 if risk in allowed_risk else -1
+
+        category = (r.get("category") or "").lower()
+        if category == "insurance" and bal > 50000:
+            score += 2
+        if category == "savings":
+            score += 1
+
+        scored.append((score, r.to_dict()))
+
+    if not scored:
+        return products_df.iloc[0].to_dict()
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[0][1]
+
+
+def extract_product_from_prompt(user_text: str, products_df):
+    if not user_text:
+        return None
+
+    text = user_text.lower()
+
+    for _, r in products_df.iterrows():
+        name = (r.get("name") or "").lower()
+        category = (r.get("category") or "").lower()
+
+        # split name into keywords
+        name_tokens = name.split()
+
+        # match if ANY keyword appears
+        if any(tok in text for tok in name_tokens):
+            return r.to_dict()
+
+        # match category (insurance, loan, fd, savings)
+        if category and category in text:
+            return r.to_dict()
+
+    return None
 
 # =============================================================================
 # MAIN PIPELINE
@@ -120,7 +167,7 @@ def generate_for_customer(
     user_request: Optional[str] = None,
     use_llm: bool = False,
     text_model_choice: Optional[str] = None,
-    custom_model: Optional[str] = None,  # accepted for UI compatibility
+    custom_model: Optional[str] = None,  # kept for UI compatibility
     image_model_choice: Optional[str] = None,
     creative_kit: Optional[dict] = None,
     creative_width: int = 1200,
@@ -129,203 +176,144 @@ def generate_for_customer(
 ) -> Dict[str, Any]:
 
     try:
-        print(f"🔥 generate_for_customer CALLED | use_llm = {use_llm}")
+        print(f"🔥 generate_for_customer | use_llm={use_llm}")
 
         customers_df, events_df, products_df = load_all()
 
-        # Normalize IDs
         customer_id = str(customer_id).strip()
         customers_df["customer_id"] = customers_df["customer_id"].astype(str).str.strip()
-        events_df["customer_id"] = events_df["customer_id"].astype(str).str.strip()
 
         if customer_id not in set(customers_df["customer_id"]):
             raise ValueError(f"Customer {customer_id} not found")
 
-        cust_row = customers_df[customers_df["customer_id"] == customer_id].iloc[0].to_dict()
+        cust_row = customers_df.loc[
+            customers_df["customer_id"] == customer_id
+        ].iloc[0].to_dict()
 
         engagement = compute_engagement(events_df, customer_id)
         value_score = compute_value_score(cust_row)
-        recent_issues = cust_row.get("recent_issues")
-        segment = infer_segment(cust_row, engagement, recent_issues)
+        segment = infer_segment(cust_row, engagement)
         cust_row["segment"] = segment
 
         metrics = {
             "engagement_score": engagement,
             "value_score": value_score,
-            "avg_monthly_balance": cust_row.get("avg_monthly_balance"),
-            "relationship_tenure_months": cust_row.get("relationship_tenure_months"),
         }
 
-        product = recommend_product(products_df, cust_row)
         recent_events = get_recent_events(events_df, customer_id)
 
-        # =====================================================
-        # ANALYTICS ONLY (SIDEBAR / CUSTOMER 360)
-        # =====================================================
+        # -------------------------------------------------
+        # Product selection
+        # -------------------------------------------------
+        recommended_products = recommend_products(products_df, cust_row, top_k=3)
+
+        product = recommended_products[0] if recommended_products else recommend_product(
+          products_df, cust_row
+     )
+
+        if user_request:
+            print("🧠 USER PROMPT:", user_request)
+            override = extract_product_from_prompt(user_request, products_df)
+            if override:
+                print(f"🔁 Product overridden by prompt → {override.get('name')}")
+                product = override
+
+        # -------------------------------------------------
+        # ANALYTICS ONLY
+        # -------------------------------------------------
         if not use_llm:
             return {
                 "customer": cust_row,
                 "product": product,
+                "recommended_products": recommended_products,
                 "recent_events": recent_events,
                 "metrics": metrics,
             }
 
-        # =====================================================
-        # MARKETING GENERATION (LLM)
-        # =====================================================
-        # -----------------------------------------------------
-        # Respect creative_kit toggles (banner / whatsapp / email)
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # MARKETING GENERATION
+        # -------------------------------------------------
+        creative_kit = creative_kit or {}
+        enabled_channels = [
+            ch for ch, enabled in creative_kit.items() if enabled
+        ]
 
-        enabled_channels = []
-
-        ck = creative_kit or {}
-
-        if ck.get("banner"):
-           enabled_channels.append("banner")
-        if ck.get("whatsapp"):
-           enabled_channels.append("whatsapp")
-        if ck.get("email"):
-           enabled_channels.append("email")
-
-        per_channel_raw_all = build_prompts_per_channel(
-           cust_row,
-           product,
-           use_llm=True,
-           n=3,
-           model=text_model_choice,
+        per_channel_raw = build_prompts_per_channel(
+            cust_row,
+            product,
+            use_llm=True,
+            n=3,
+            model=text_model_choice,
         )
-
-        # 🔥 FILTER ONLY ENABLED CHANNELS
-        per_channel_raw = {
-         ch: variants
-         for ch, variants in per_channel_raw_all.items()
-         if ch in enabled_channels
-       }
-
 
         variants_scored = {}
         selected = {}
 
         for channel, variants in per_channel_raw.items():
+            if channel not in enabled_channels:
+                continue
+
             processed = []
             for v in variants:
-                compliant, reason, cleaned = apply_policy_filter(v)
-
-                # 🔥 FALLBACK: if policy wipes content, keep original LLM output
-                if not cleaned or not cleaned.get("body"):
-                    cleaned = v
-                    compliant = True
-
-                processed.append({
-                     "variant": cleaned,
-                     "compliant": compliant
-               })
+                compliant, _, cleaned = apply_policy_filter(v)
+                cleaned = cleaned if cleaned and cleaned.get("body") else v
+                processed.append({"variant": cleaned, "compliant": True})
 
             try:
                 ranked = rank_variants(processed, cust_row, channel)
             except TypeError:
                 ranked = rank_variants(processed)
 
-            normalized = []
-            for item in ranked:
-                if isinstance(item, dict) and "variant" in item:
-                    normalized.append({
-                        "variant": item["variant"],
-                        "score": float(item.get("score", 0.0))
-                    })
-                elif isinstance(item, (list, tuple)) and len(item) == 2:
-                    a, b = item
-                    if isinstance(a, (int, float)):
-                        normalized.append({"variant": b, "score": float(a)})
-                    elif isinstance(b, (int, float)):
-                        normalized.append({"variant": a, "score": float(b)})
-                elif isinstance(item, dict):
-                    normalized.append({"variant": item, "score": 0.0})
-                else:
-                    normalized.append({"variant": {"body": str(item)}, "score": 0.0})
-
-           # ---------- FINAL SAFETY NET ----------
-            if not normalized:
-              # 🔥 fallback: use raw LLM output directly
-              first_llm_variant = variants[0] if variants else None
-              if first_llm_variant:
-                normalized = [{
-                "variant": first_llm_variant,
-                "score": 1.0
-               }]
-
-            variants_scored[channel] = normalized
-
-            # ✅ FINAL HARD GUARANTEE — NEVER RETURN EMPTY VARIANT
             chosen = None
+            for item in ranked:
+                v = item.get("variant") if isinstance(item, dict) else None
+                if v and v.get("body"):
+                    chosen = v
+                    break
 
-            # 1️⃣ Prefer ranked output ONLY if it has real content
-            if normalized:
-                 v = normalized[0].get("variant", {})
-                 if isinstance(v, dict) and v.get("body"):
-                      chosen = v
-
-            # 2️⃣ Fallback to RAW LLM output (this is the key fix)
             if not chosen and variants:
-                 raw = variants[0]
-                 if isinstance(raw, dict) and raw.get("body"):
-                   chosen = raw
-
-            # 3️⃣ Absolute last resort (should never happen)
-            if not chosen:
-              chosen = {
-              "variant_tag": "A",
-              "body": "Special offer curated just for you.",
-             }
+                chosen = variants[0]
 
             selected[channel] = chosen
+            variants_scored[channel] = ranked
 
-        # =====================================================
-        # IMAGE GENERATION (OPTIONAL)
-        # =====================================================
+        # -------------------------------------------------
+        # IMAGE GENERATION (BANNER ONLY)
+        # -------------------------------------------------
         creative_result = None
-        ck = creative_kit or {"banner": True}
-
-        if ck.get("banner") and image_model_choice and image_model_choice != "No image":
-
-               # fallback-safe banner variant
-               banner_variant = (
-                 selected.get("banner")
-                 or per_channel_raw.get("banner", [{}])[0]
-               )
-
-               if banner_variant and banner_variant.get("body"):
-                    print("🖼️ [PIPELINE] Generating banner image...")
-
-                    mapped = settings.map_image_choice(image_model_choice)
-
-                    creative_result = generate_creatives_for_variant(
-                       campaign_id=f"cust_{customer_id}",
-                       variant_tag=banner_variant.get("variant_tag", "A"),
-                       product_key=product.get("category", "generic"),
-                       variant_brief=banner_variant["body"][:200],
-                       headline=banner_variant.get("subject") or product.get("name"),
-                       subtitle=banner_variant["body"][:120],
-                       cta_text="Know More",
-                       n_images=1,
-                       product_context=product,          # ✅ NEW
-                       customer_context=cust_row, 
-                       output_sizes=[(creative_width, creative_height)],
-                       #image_model_choice=mapped.get("backend"),
-                       image_model_choice=image_model_choice,
-                       steps=creative_steps,
-                       device=mapped.get("device"),
-                      )
+        if (
+            creative_kit.get("banner")
+            and image_model_choice
+            and image_model_choice != "No image"
+            and selected.get("banner")
+        ):
+            mapped = settings.map_image_choice(image_model_choice)
+            creative_result = generate_creatives_for_variant(
+                campaign_id=f"cust_{customer_id}",
+                variant_tag="A",
+                product_key=product.get("category", "generic"),
+                variant_brief=selected["banner"]["body"][:200],
+                headline=selected["banner"].get("subject") or product.get("name"),
+                subtitle=selected["banner"]["body"][:120],
+                cta_text="Know More",
+                n_images=1,
+                customer=cust_row,            
+                product=product,   
+                output_sizes=[(creative_width, creative_height)],
+                image_model_choice=mapped.get("backend"),
+                steps=creative_steps,
+                device=mapped.get("device"),
+            )
 
         return {
-            "customer": cust_row,
-            "product": product,
-            "recent_events": recent_events,
-            "metrics": metrics,
-            "variants_scored": variants_scored,
-            "selected": selected,
-            "creative_result": creative_result,
+                   "customer": cust_row,
+                   "product": product,
+                   "recommended_products": recommended_products,
+                   "recent_events": recent_events,
+                   "metrics": metrics,
+                   "variants_scored": variants_scored,
+                   "selected": selected,
+                   "creative_result": creative_result,
         }
 
     except Exception:
@@ -334,13 +322,130 @@ def generate_for_customer(
 
 
 # =============================================================================
-# INTENT DETECTION
+# Intent Detection
 # =============================================================================
 
 def detect_intent(user_text: str) -> str:
     t = user_text.lower()
-    if any(k in t for k in ["generate", "marketing", "campaign", "promotion", "message"]):
+
+    if any(k in t for k in [
+        "generate", "marketing", "campaign", "promotion", "message"
+    ]):
         return "MARKETING_GEN"
-    if any(k in t for k in ["tell me", "about", "profile", "details"]):
+
+    if any(k in t for k in [
+        "tell me", "about", "profile", "details"
+    ]):
         return "CUSTOMER_INFO"
+
+    # 🔥 NEW — PRODUCT ADVISORY
+    if any(k in t for k in [
+        "what product", "which product", "suggest product",
+        "can be sold", "recommend product", "offer to this user"
+    ]):
+        return "PRODUCT_ADVISORY"
+
     return "GENERIC_CHAT"
+
+## recommended products based on simple rules
+def recommend_products(products_df, cust_row, top_k: int = 3):
+    scored = []
+
+    bal = float(cust_row.get("avg_monthly_balance") or 0)
+    lifecycle = cust_row.get("lifecycle_stage", "")
+    risk = cust_row.get("risk_profile", "")
+
+    for _, r in products_df.iterrows():
+        score = 0
+        rules = r.get("eligibility_rules")
+
+        # Safe rule parsing
+        if isinstance(rules, str):
+            try:
+                import json
+                rules = json.loads(rules)
+            except Exception:
+                rules = {}
+        if not isinstance(rules, dict):
+            rules = {}
+
+        min_bal = float(rules.get("min_balance", 0) or 0)
+        allowed_risk = rules.get("risk", [])
+
+        # Basic eligibility
+        if bal < min_bal:
+            continue
+
+        # Scoring
+        score += min(bal / 50000, 5)
+
+        if lifecycle == "active":
+            score += 2
+        elif lifecycle == "dormant":
+            score += 1
+
+        if allowed_risk:
+            score += 2 if risk in allowed_risk else -1
+
+        category = (r.get("category") or "").lower()
+        if category == "savings":
+            score += 1
+        elif category in ("loan", "credit"):
+            score += 2 if bal > 75000 else 0
+        elif category == "insurance":
+            score += 1 if bal > 50000 else 0
+
+        scored.append((score, r.to_dict()))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return [p for _, p in scored[:top_k]]
+
+def recommend_top_products(products_df, cust_row, top_k=3):
+    scored = []
+
+    bal = float(cust_row.get("avg_monthly_balance") or 0)
+    lifecycle = cust_row.get("lifecycle_stage", "")
+    risk = cust_row.get("risk_profile", "")
+
+    for _, r in products_df.iterrows():
+        score = 0
+        rules = r.get("eligibility_rules", {})
+
+        # Parse rules safely
+        if isinstance(rules, str):
+            try:
+                import json
+                rules = json.loads(rules)
+            except Exception:
+                rules = {}
+
+        min_bal = float(rules.get("min_balance", 0) or 0)
+        allowed_risk = rules.get("risk", [])
+
+        if bal < min_bal:
+            continue
+
+        # ---------- SCORING ----------
+        score += min(bal / 50000, 5)
+
+        if lifecycle == "active":
+            score += 2
+        if lifecycle == "winback":
+            score += 1
+
+        if allowed_risk:
+            score += 2 if risk in allowed_risk else -1
+
+        category = (r.get("category") or "").lower()
+        if category == "savings":
+            score += 1
+        elif category in ("loan", "credit"):
+            score += 2 if bal > 75000 else 0
+        elif category == "insurance":
+            score += 1 if bal > 50000 else 0
+
+        scored.append((score, r.to_dict()))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in scored[:top_k]]

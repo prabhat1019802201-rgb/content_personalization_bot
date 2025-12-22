@@ -1,87 +1,94 @@
-# engine/prompting.py
-"""
-Prompt construction + LLM invocation.
-Generates best-of-3 variants per channel.
-"""
-
 from typing import Dict, List
 from engine.llm_client import call_llm
 import sys
 
 def _dbg(msg):
     print(f"[PROMPTING] {msg}", file=sys.stderr)
-# -----------------------------------------------------------------------------
-# Prompt builders
-# -----------------------------------------------------------------------------
 
 def _base_context(customer: dict, product: dict) -> str:
     return f"""
-You are a senior bank marketing copywriter.
+You are a senior marketing copywriter at Union Bank of India.
 
-Customer profile:
+Customer Profile:
 - Name: {customer.get('name')}
 - Age: {customer.get('age')}
 - City: {customer.get('city')}
-- Lifecycle stage: {customer.get('lifecycle_stage')}
-- Risk profile: {customer.get('risk_profile')}
-- Avg monthly balance: {customer.get('avg_monthly_balance')}
+- Lifecycle Stage: {customer.get('lifecycle_stage')}
+- Risk Profile: {customer.get('risk_profile')}
+- Avg Monthly Balance: ₹{customer.get('avg_monthly_balance')}
 
-Product:
-- Name: {product.get('name')}
+Product Context:
+- Product Name: {product.get('name')}
 - Category: {product.get('category')}
-- Description: {product.get('description', '')}
+- Description: {product.get('description', 'N/A')}
+
+Objective:
+Create compliant, customer-centric banking communication
+that is clear, professional, and persuasive.
+""".strip()
+
+# -----------------------------------------------------------------------------
+# Curated channel instructions
+# -----------------------------------------------------------------------------
+
+def _channel_instructions(channel: str) -> str:
+    if channel == "email":
+        return """
+Write a professional Indian bank marketing EMAIL.
+
+Follow this structure:
+1. Strong, benefit-driven subject line
+2. Warm opening line referencing customer context
+3. Clear value proposition of the product
+4. 2–4 short bullet benefits
+5. Clear CTA (visit branch / call / apply)
+6. Polite, compliant closing
 
 Tone:
-- Professional
 - Trustworthy
-- Simple banking language
-""".strip()
+- Professional
+- Customer-centric
+- No guarantees or exaggerated claims
 
+Return format:
+Subject: <subject line>
 
-def _channel_prompt(channel: str) -> str:
-    if channel == "banner":
-        return """
-Generate 3 DIFFERENT banner headlines.
-Each headline must be max 8 words.
-No emojis.
-Return as:
-A: ...
-B: ...
-C: ...
-""".strip()
+<body>
+"""
 
     if channel == "whatsapp":
         return """
-Generate 3 DIFFERENT WhatsApp marketing messages.
-Each message:
-- Friendly
+Write a WhatsApp marketing message.
+
+Rules:
 - 2–3 short lines
-- Includes CTA
-Return as:
-A: ...
-B: ...
-C: ...
-""".strip()
+- Friendly but professional
+- Clear CTA
+- No emojis
+- No guarantees
 
-    if channel == "email":
+Example style:
+Hello Mr. Kumar,
+You may benefit from a Fixed Deposit offering better returns on surplus balance.
+Call 1800-258-4588 to know more.
+"""
+
+    if channel == "banner":
         return """
-Generate 3 DIFFERENT marketing emails.
-Each must include:
-- Subject line
-- Body (short paragraph)
-Return as:
-A:
-Subject: ...
-Body: ...
+Write ONE banner headline.
 
-B:
-Subject: ...
-Body: ...
+Rules:
+- 5–8 words only
+- Outcome-focused
+- Aspirational
+- No punctuation
+- No emojis
 
-C:
-Subject: ...
-Body: ...
-""".strip()
+Examples:
+- Your Dream Home Is Within Reach
+- Small Savings Big Future
+- Secure Tomorrow Starting Today
+"""
 
     return ""
 
@@ -94,119 +101,67 @@ def build_prompts_per_channel(
     customer: dict,
     product: dict,
     use_llm: bool = True,
-    n: int = 3,
+    n: int = 1,  # single output per channel
     model: str | None = None,
-):
-    """
-    Returns:
-    {
-      "banner": [variant_dict, ...],
-      "whatsapp": [...],
-      "email": [...]
-    }
-    """
+    enabled_channels: List[str] | None = None,
+) -> Dict[str, List[dict]]:
 
     _dbg("build_prompts_per_channel called")
     _dbg(f"use_llm={use_llm}, model={model}")
 
-    channels = ["banner", "whatsapp", "email"]
+    channels = enabled_channels or ["banner", "whatsapp", "email"]
     results = {}
 
-    customer_name = customer.get("name", "Customer")
-    product_name = product.get("name", "our product")
+    base_context = _base_context(customer, product)
 
     for channel in channels:
-        variants = []
+        instruction = _channel_instructions(channel)
 
-        for i in range(n):
-            variant_tag = chr(ord("A") + i)
+        prompt = f"""
+{base_context}
 
-            prompt = f"""
-You are a banking marketing expert.
+TASK:
+{instruction}
 
-Create a {channel.upper()} marketing message.
-
-Customer:
-- Name: {customer_name}
-- Segment: {customer.get("segment")}
-- City: {customer.get("city")}
-
-Product:
-- Name: {product_name}
-- Category: {product.get("category")}
-
-Rules:
-- Tone: professional, friendly
+Important rules:
 - Bank: Union Bank of India
-- Avoid emojis
-- Short and clear
+- RBI compliant language
+- No guarantees or promises
+- Clear and customer-friendly
 
-Return only the message text.
+Return only the final content.
 """
 
-            _dbg(f"Calling LLM for {channel} variant {variant_tag}")
+        _dbg(f"Calling LLM for channel={channel}")
 
-            if use_llm:
-                try:
-                    from engine.llm_client import call_llm
-                    text = call_llm(prompt, model=model)
-                except Exception as e:
-                    _dbg(f"LLM ERROR: {e}")
-                    text = ""
-            else:
-                text = f"{product_name} designed for {customer_name}."
+        if use_llm:
+            try:
+                text = call_llm(prompt, model=model)
+            except Exception as e:
+                _dbg(f"LLM ERROR: {e}")
+                text = ""
+        else:
+            text = f"{product.get('name')} designed for {customer.get('name')}."
 
-            variants.append({
-                "variant_tag": variant_tag,
-                "subject": f"{product_name} from Union Bank" if channel == "email" else None,
-                "body": text.strip(),
-                "disclaimer": "T&C apply"
-            })
+        variant = {
+            "variant_tag": "A",
+            "body": text.strip(),
+            "disclaimer": "T&C apply",
+            "subject": None
+        }
 
-        results[channel] = variants
+        # Extract subject if email
+        if channel == "email":
+            lines = text.splitlines()
+            for ln in lines:
+                if ln.lower().startswith("subject"):
+                    variant["subject"] = ln.split(":", 1)[-1].strip()
+                    variant["body"] = "\n".join(
+                        l for l in lines if not l.lower().startswith("subject")
+                    ).strip()
+                    break
+
+        results[channel] = [variant]
 
     _dbg("build_prompts_per_channel completed")
     return results
-
-# -----------------------------------------------------------------------------
-# Output parser
-# -----------------------------------------------------------------------------
-
-def _parse_variants(channel: str, text: str) -> List[dict]:
-    """
-    Parses A/B/C style output safely.
-    """
-    variants = []
-    blocks = [b.strip() for b in text.split("\n") if b.strip()]
-
-    current = None
-    buf = []
-
-    def flush(tag, lines):
-        body = "\n".join(lines).strip()
-        subject = None
-
-        if channel == "email":
-            for ln in lines:
-                if ln.lower().startswith("subject"):
-                    subject = ln.split(":", 1)[-1].strip()
-
-        variants.append({
-            "variant_tag": tag,
-            "subject": subject,
-            "body": body
-        })
-
-    for line in blocks:
-        if line.startswith(("A:", "B:", "C:")):
-            if current:
-                flush(current, buf)
-            current = line[0]
-            buf = [line[2:].strip()]
-        else:
-            buf.append(line)
-
-    if current:
-        flush(current, buf)
-
-    return variants
